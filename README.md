@@ -6,7 +6,7 @@
 
 ## 环境配置
 
-需要 Python 3.11 及以下依赖：
+本地建议使用 Python 3.11，并安装以下依赖：
 
 ```bash
 python -m pip install -r requirements.txt
@@ -61,7 +61,7 @@ $env:SPORT_PASSWORD = "你的密码"
 python .\sport_bot.py
 ```
 
-运行日志写入 `sport_bot.log)，同时会输出到终端。
+运行日志写入 `sport_bot.log`，同时会输出到终端。
 
 ## 免责声明
 
