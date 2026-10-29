@@ -9,9 +9,11 @@ import time
 import requests
 
 from cas_auth import authenticate, AuthenticationError, InteractionRequired
+from token_auth import parse_token, verify_token
 
 
 class Config:
+    TOKEN = os.getenv("SPORT_TOKEN", "")
     USER = os.getenv("SPORT_USER", "")
     PASSWORD = os.getenv("SPORT_PASSWORD", "")
     LONGITUDE = os.getenv("SPORT_LONGITUDE") or "108.654387"
@@ -36,7 +38,7 @@ class RedactSecrets(logging.Filter):
 
 
 def configure_logging():
-    redactor = RedactSecrets([Config.USER, Config.PASSWORD, Config.SMTP_AUTH_CODE])
+    redactor = RedactSecrets([Config.TOKEN, Config.USER, Config.PASSWORD, Config.SMTP_AUTH_CODE])
     handlers = [logging.StreamHandler(), logging.FileHandler(Path(__file__).with_name("sport_bot.log"), encoding="utf-8")]
     for handler in handlers:
         handler.addFilter(redactor)
@@ -88,8 +90,8 @@ def send_email(content):
 
 
 def run(*, auth_only=False, headed=False):
-    if not Config.USER or not Config.PASSWORD:
-        logging.error("请在 Actions Secrets 中设置 SPORT_USER 和 SPORT_PASSWORD。")
+    if not Config.TOKEN and (not Config.USER or not Config.PASSWORD):
+        logging.error("请在 Actions Secrets 中设置 SPORT_TOKEN；或使用账号密码登录方案。")
         return 1
     try:
         longitude, latitude = float(Config.LONGITUDE), float(Config.LATITUDE)
@@ -99,7 +101,12 @@ def run(*, auth_only=False, headed=False):
         logging.error("坐标格式或范围错误，请检查 SPORT_LONGITUDE / SPORT_LATITUDE。")
         return 1
     try:
-        token = authenticate(Config.USER, Config.PASSWORD, headless=not headed)
+        if Config.TOKEN:
+            token = parse_token(Config.TOKEN)
+            verify_token(token)
+            logging.info("SPORT_TOKEN 已通过体育平台只读接口校验，无需浏览器登录。")
+        else:
+            token = authenticate(Config.USER, Config.PASSWORD, headless=not headed)
     except InteractionRequired as error:
         logging.error("%s", error)
         return 2
@@ -107,7 +114,7 @@ def run(*, auth_only=False, headed=False):
         logging.error("%s", error)
         return 1
     if auth_only:
-        logging.info("登录验证通过；本模式不会提交签到或签退。")
+        logging.info("登录或 token 验证通过；本模式不会提交签到或签退。")
         return 0
     for handler in logging.getLogger().handlers:
         for filter_ in handler.filters:

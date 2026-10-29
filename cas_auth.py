@@ -154,7 +154,7 @@ async def authenticate_async(username, password, *, headless=True, timeout_secon
     try:
         from playwright.async_api import async_playwright, Error, TimeoutError
     except ImportError as error:
-        raise AuthenticationError("缺少 Playwright，请安装 requirements.txt 并安装 Chromium。") from error
+        raise AuthenticationError("缺少 Playwright，请安装 requirements-browser.txt 并安装 Chromium。") from error
 
     observer = AuthObserver(interactive=interactive)
     browser = None

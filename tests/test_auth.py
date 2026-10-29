@@ -74,7 +74,7 @@ class StateTests(unittest.TestCase):
 
 class ExecutionTests(unittest.TestCase):
     def setUp(self):
-        self.config = patch.multiple(sport_bot.Config, USER='example_student', PASSWORD='example_password', SEND_EMAIL=False)
+        self.config = patch.multiple(sport_bot.Config, TOKEN='', USER='example_student', PASSWORD='example_password', SEND_EMAIL=False)
         self.config.start()
         self.addCleanup(self.config.stop)
 
