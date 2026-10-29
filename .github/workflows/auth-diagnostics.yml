@@ -1,0 +1,95 @@
+name: Auth entry diagnostics (no login)
+
+on:
+  push:
+    paths:
+      - ".github/workflows/auth-diagnostics.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Inspect public authentication redirects
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import re
+          from http.cookiejar import CookieJar
+          from urllib.error import HTTPError, URLError
+          from urllib.parse import urlencode, urljoin, urlparse
+          from urllib.request import Request, HTTPRedirectHandler, HTTPCookieProcessor, build_opener
+          
+          class NoRedirect(HTTPRedirectHandler):
+              def redirect_request(self, request, fp, code, message, headers, new_url):
+                  return None
+          
+          jar = CookieJar()
+          opener = build_opener(HTTPCookieProcessor(jar), NoRedirect())
+          headers = {
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
+              "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+          }
+          url = "https://org.xjtu.edu.cn/openplatform/oauth/authorize?" + urlencode({
+              "appId": "1740",
+              "redirectUri": "https://ipahw.xjtu.edu.cn/sso/callback",
+              "responseType": "code",
+              "scope": "user_info",
+              "state": "1234",
+          })
+          print("Read-only initialization probe. No account, password, or attendance API is used.")
+          for hop in range(5):
+              try:
+                  response = opener.open(Request(url, headers=headers), timeout=30)
+              except HTTPError as error:
+                  response = error
+              except URLError as error:
+                  print(json.dumps({"hop": hop, "network_error_type": type(error.reason).__name__}))
+                  raise SystemExit(1)
+              with response:
+                  status = response.getcode()
+                  current = urlparse(url)
+                  location = response.headers.get("Location", "")
+                  target = urlparse(urljoin(url, location)) if location else None
+                  cookie_names = [
+                      item.split("=", 1)[0].strip()
+                      for item in response.headers.get_all("Set-Cookie", [])
+                  ]
+                  result = {
+                      "hop": hop,
+                      "status": status,
+                      "host": current.hostname,
+                      "path": current.path,
+                      "response_cookie_names": cookie_names,
+                      "session_cookie_names": sorted({cookie.name for cookie in jar}),
+                      "redirect_host": target.hostname if target else None,
+                      "redirect_path": target.path if target else None,
+                      "credentials_sent": False,
+                  }
+                  if hop == 0:
+                      expected = {"route", "rdstate", "cur_appId_", "state"}
+                      result["legacy_expected_cookies_missing"] = sorted(expected - set(cookie_names))
+                  if not target:
+                      body = response.read(512000).decode("utf-8", errors="replace")
+                      title = re.search(r"<title>(.*?)</title>", body, re.I | re.S)
+                      result["page_title"] = title.group(1).strip() if title else None
+                      result["captcha_feature_enabled"] = bool(re.search(r"var casServerCaptchaEnabled\s*=\s*true", body))
+                      result["mfa_feature_enabled"] = bool(re.search(r'var mfaEnabled\s*=\s*"true"\s*==\s*"true"', body))
+                  print(json.dumps(result, ensure_ascii=False))
+              if status >= 400:
+                  raise SystemExit(1)
+              if not target:
+                  break
+              if target.scheme != "https" or target.hostname not in {"org.xjtu.edu.cn", "login.xjtu.edu.cn"}:
+                  print("Stopped at an unexpected redirect destination.")
+                  raise SystemExit(1)
+              url = urljoin(url, location)
+          else:
+              raise SystemExit("Redirect limit reached.")
+          
+          PY
