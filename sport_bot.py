@@ -73,8 +73,25 @@ def get_token(user, password):
                 "state": "1234",
             },
             allow_redirects=False,
+            timeout=30,
         )
         cookies = response.cookies.get_dict()
+        redirect_host = urlparse(response.headers.get("Location", "")).hostname
+        logging.info(
+            "认证初始化：HTTP %s，跳转主机=%s，返回 Cookie 名称=%s",
+            response.status_code,
+            redirect_host or "无",
+            ", ".join(sorted(cookies)) or "无",
+        )
+        response.raise_for_status()
+        required_cookies = {"route", "rdstate", "cur_appId_", "state"}
+        missing_cookies = sorted(required_cookies - set(cookies))
+        if missing_cookies:
+            raise RuntimeError(
+                "认证初始化缺少 Cookie: "
+                + ", ".join(missing_cookies)
+                + "；服务器响应与原脚本登录流程不匹配，此时尚未提交账号密码"
+            )
 
         # Step 2: 获取验证码Cookie
         response = requests.post(
@@ -187,7 +204,7 @@ def main():
     if not token:
         logging.error("获取token失败，终止流程")
         if Config.SEND_EMAIL:
-            send_email("获取token失败，请检查账号密码")
+            send_email("认证流程失败，请查看运行日志中的具体失败阶段；不一定是账号密码错误")
         return False
 
     # 执行签到
