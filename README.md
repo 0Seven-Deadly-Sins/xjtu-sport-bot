@@ -1,88 +1,68 @@
-# XJTU西安交大研究生自动体育打卡脚本
+# XJTU 西安交大研究生体育打卡脚本
 
 ## 简介
 
-此脚本用于西安交通大学研究生体美劳中体育打卡系统的自动签到与签退。脚本模拟用户登录，获取认证令牌，并在指定时间间隔后完成签到和签退操作，支持邮件通知功能。
-
----
+此脚本用于西安交通大学研究生体美劳体育打卡系统的签到与签退，支持本地运行和 GitHub Actions 定时运行。脚本会先签到，等待 31 分钟后尝试签退，并可选发送邮件通知。
 
 ## 环境配置
 
-### 依赖安装
-
-运行前需安装以下Python库：
+需要 Python 3.11 及以下依赖：
 
 ```bash
-pip install requests pycryptodome 
+python -m pip install -r requirements.txt
 ```
 
----
+账号信息通过环境变量读取，不要把学号、密码或邮箱授权码写入代码或提交到仓库。
 
-## 使用说明
+| 环境变量 | 用途 | 必需 |
+| --- | --- | --- |
+| `SPORT_USER` | 学号 | 是 |
+| `SPORT_PASSWORD` | 统一身份认证密码 | 是 |
+| `SPORT_LONGITUDE` | 签到经度；默认 `108.654387` | 否 |
+| `SPORT_LATITUDE` | 签到纬度；默认 `34.257229` | 否 |
+| `SPORT_SEND_EMAIL` | 设为 `true` 启用邮件通知；默认关闭 | 否 |
+| `SMTP_AUTH_CODE` | QQ 邮箱 SMTP 授权码 | 邮件通知启用时 |
+| `EMAIL_SENDER` | 发件人邮箱 | 邮件通知启用时 |
+| `EMAIL_RECEIVER` | 收件人邮箱 | 邮件通知启用时 |
 
-### 1. 配置用户信息
+## GitHub Actions 定时运行
 
-打开脚本文件 sport_bot.py，修改以下字段：
+工作流位于 `.github/workflows/sport-bot.yml`，默认每天北京时间 12:00 运行，也可以从 Actions 页面手动触发。GitHub 的计划任务偶尔会因负载延迟启动。
 
-- **学号与密码**  
-  找到 `Config` 类中的变量：
-  ```python
-  USER = "user"         # 改为你的学号
-  PASSWORD = "password"   # 改为你的密码
-  ```
+1. 打开仓库的 **Settings → Secrets and variables → Actions**。
+2. 在 **Repository secrets** 中添加：
+   - `SPORT_USER`
+   - `SPORT_PASSWORD`
+3. 如需邮件通知，再添加以下 secrets：
+   - `SMTP_AUTH_CODE`
+   - `EMAIL_SENDER`
+   - `EMAIL_RECEIVER`
+4. 如需更改默认坐标，在 **Variables** 中添加 `SPORT_LONGITUDE` 和 `SPORT_LATITUDE`。
+5. 如需启用邮件通知，在 **Variables** 中添加 `SPORT_SEND_EMAIL`，值设为 `true`。
+6. 打开 **Actions → XJTU Sport Bot → Run workflow** 可手动运行一次；之后定时任务会按计划运行。
 
-- **位置坐标**  
-  默认使用涵英楼北草坪坐标，可自行修改：
-  ```python
-  LONGTITUDE = 108.654387      # 经度
-  LATITUDE = 34.257229        # 纬度
-  ```
+工作流成功与否会反映在 Actions 运行结果中。不要在 issue、提交记录或聊天中发送账号密码和邮箱授权码。
 
----
+## 本地运行
 
-### 2. 邮件通知配置（可选）
+macOS / Linux：
 
-若需启用邮件通知，按以下步骤配置：
-
-1. **开启QQ邮箱SMTP服务**  
-   - 登录QQ邮箱 → 设置 → 账户 → 开启“POP3/SMTP服务”
-   - 生成16位SMTP授权码（`auth_code`）
-
-2. **修改脚本配置**  
-   在 `Config` 类中设置：
-   ```python
-   SEND_EMAIL = True                # 设为True启用邮件通知
-   SMTP_AUTH_CODE = "你的SMTP授权码"  # 从QQ邮箱获取
-   EMAIL_SENDER = "发件人QQ邮箱@qq.com"
-   EMAIL_RECEIVER = "接收通知的邮箱"  # 可以是同一邮箱
-   ```
-
----
-
-## 运行脚本
-
-### 方法1：直接执行脚本：
 ```bash
+export SPORT_USER="你的学号"
+export SPORT_PASSWORD="你的密码"
 python sport_bot.py
 ```
 
-### 方法2：使用定时任务：
-可使用系统工具（如cron或任务计划程序）设置定时运行，实现全自动打卡。
+PowerShell：
 
-**在Linux系统中使用crontab定时运行脚本：**
-1. 打开crontab编辑器：
-   ```bash
-   crontab -e
-   ```
-2. 添加定时任务（每天中午12点运行）：
-   ```bash
-   0 12 * * * /usr/bin/python3 /path/to/sport_bot.py
-   ```
-   注意替换`/usr/bin/python3`为你的Python解释器路径，`/path/to/sport_bot.py`为脚本的绝对路径。
+```powershell
+$env:SPORT_USER = "你的学号"
+$env:SPORT_PASSWORD = "你的密码"
+python .\sport_bot.py
+```
 
-若打卡失败，请检查日志文件 `sport_bot.log` 或根据邮件提示排查错误。
-
----
+运行日志写入 `sport_bot.log)，同时会输出到终端。
 
 ## 免责声明
-此脚本仅供学习和交流使用，请勿用于任何商业用途或违反学校规定的行为。使用此脚本所产生的任何后果由使用者自行承担，作者不对任何损失或损害负责。请尊重他人劳动成果，合理使用技术手段。
+
+请仅在符合学校规定及课程要求的场景中使用，并确保打卡记录与实际活动相符。使用此脚本所产生的任何后果由使用者自行承担。
