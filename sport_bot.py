@@ -10,23 +10,23 @@ from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 import base64
 import os
+import sys
 
 
-# 配置信息
+# 配置信息：GitHub Actions 中从 Secrets / Variables 读取，方便本地运行时也可用环境变量覆盖
 class Config:
-    # 用户信息
-    USER = "student_id"  # 学号
-    PASSWORD = "password"  # 密码
+    USER = os.getenv("SPORT_USER", "")
+    PASSWORD = os.getenv("SPORT_PASSWORD", "")
 
-    # 涵英楼北草坪坐标
-    LONGITUDE = 108.654387  # 经度
-    LATITUDE = 34.257229  # 纬度
+    # 若未设置，则使用仓库 README 中的示例坐标
+    LONGITUDE = float(os.getenv("SPORT_LONGITUDE") or "108.654387")
+    LATITUDE = float(os.getenv("SPORT_LATITUDE") or "34.257229")
 
-    # 邮件配置
-    SEND_EMAIL = True                # 设为True启用邮件通知
-    SMTP_AUTH_CODE = "你的SMTP授权码"  # 从QQ邮箱获取
-    EMAIL_SENDER = "发件人QQ邮箱@qq.com"
-    EMAIL_RECEIVER = "接收通知的邮箱"  # 可以是同一邮箱
+    # 邮件通知默认关闭；需要时再配置 SMTP Secrets 和 SPORT_SEND_EMAIL Variable
+    SEND_EMAIL = os.getenv("SPORT_SEND_EMAIL", "false").strip().lower() in {"1", "true", "yes", "on"}
+    SMTP_AUTH_CODE = os.getenv("SMTP_AUTH_CODE", "")
+    EMAIL_SENDER = os.getenv("EMAIL_SENDER", "")
+    EMAIL_RECEIVER = os.getenv("EMAIL_RECEIVER", "")
 
     # 加密公钥，无需修改
     AES_PUBLIC_KEY = "0725@pwdorgopenp"
@@ -38,10 +38,13 @@ class Config:
 
 # 初始化日志
 logging.basicConfig(
-    filename=Config.LOG_FILE,
     level=Config.LOG_LEVEL,
     format="%(asctime)s - %(levelname)s - %(message)s",
-    encoding="utf-8",
+    handlers=[
+        logging.FileHandler(Config.LOG_FILE, encoding="utf-8"),
+        logging.StreamHandler(),
+    ],
+    force=True,
 )
 
 # 前端界面的加密函数
@@ -172,6 +175,10 @@ def send_email(content):
 
 
 def main():
+    if not Config.USER or not Config.PASSWORD:
+        logging.error("请在环境变量中设置 SPORT_USER 和 SPORT_PASSWORD")
+        return False
+
     # 获取加密后的密码
     crypto_pwd = aes_ecb_encrypt(Config.PASSWORD)
 
@@ -181,7 +188,7 @@ def main():
         logging.error("获取token失败，终止流程")
         if Config.SEND_EMAIL:
             send_email("获取token失败，请检查账号密码")
-        return
+        return False
 
     # 执行签到
     sign_in_success = sign_operation(
@@ -196,6 +203,7 @@ def main():
         "签到",
     )
 
+    sign_out_success = False
     if sign_in_success:
         logging.info("等待31分钟后签退...")
         print("签到成功！请勿关闭程序，31分钟后自动签退...")
@@ -220,6 +228,8 @@ def main():
     if Config.SEND_EMAIL:
         send_email(notice_msg)
 
+    return sign_in_success and sign_out_success
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(0 if main() else 1)
