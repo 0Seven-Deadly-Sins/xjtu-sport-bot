@@ -20,6 +20,18 @@
 
 新增的 **Verify CAS login (no attendance)** 工作流用于验证适配：先运行离线单元测试，再执行一次 `--auth-only` 登录。它不会执行体育签到或签退。**Auth entry diagnostics (no login)** 则只检查公开登录入口，不会发送账号密码。
 
+目前已实测到学校对新的云端登录要求 MFA。支持下列首次登录配置：
+
+1. 在本地下载本仓库 ZIP 并解压，双击 `setup-local.cmd`（需要 Python 3.10 或更新版本）。
+2. 在打开的学校浏览器窗口中，自己填写账号密码并完成 MFA 或验证码。
+3. 登录完成后，在配置窗口点击“复制学校会话配置”，再打开 GitHub Secrets 页面。
+4. 新建名为 `SPORT_BROWSER_STATE` 的 Repository secret，把复制内容粘贴到 Secret 值框并保存。
+5. 回到 Actions，手动运行 `verify-login`，确认学校是否允许该会话在云端继续使用。
+
+会话文件仅保存在本地 `.local/auth-state.json`，已被 Git 忽略。复制窗口可用 `python setup_login.py --copy-existing` 重新打开。不要把会话内容发到聊天或提交到仓库。服务器会检查会话有效期、设备与网络；会话过期或云端仍要求本人验证时，需要重新配置，或改用保持本地环境的自托管运行器。
+
+为避免重复提交密码，`Verify CAS login (no attendance)` 在代码推送时若没有会话 Secret，仅运行离线测试；手动触发时才尝试登录。
+
 ## 可选参数
 
 在 **Variables** 标签中配置：

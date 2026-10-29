@@ -26,11 +26,26 @@ jobs:
         run: python -m pip install -r requirements.txt
       - name: Check authentication and operation guards
         run: python -m unittest discover -s tests -v
+      - name: Decide whether a login is ready
+        id: session
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SPORT_BROWSER_STATE: ${{ secrets.SPORT_BROWSER_STATE }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] || [ -n "$SPORT_BROWSER_STATE" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "Browser session is not configured. Unit tests passed; live login was skipped." >> "$GITHUB_STEP_SUMMARY"
+          fi
       - name: Install Chromium
+        if: steps.session.outputs.ready == 'true'
         run: python -m playwright install --with-deps chromium
       - name: Verify one login without attendance
+        if: steps.session.outputs.ready == 'true'
         env:
           SPORT_USER: ${{ secrets.SPORT_USER }}
           SPORT_PASSWORD: ${{ secrets.SPORT_PASSWORD }}
+          SPORT_BROWSER_STATE: ${{ secrets.SPORT_BROWSER_STATE }}
           PYTHONUNBUFFERED: "1"
         run: python sport_bot.py --auth-only

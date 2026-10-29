@@ -2,7 +2,7 @@ import logging
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
-from cas_auth import AuthObserver, CredentialsRejected, InteractionRequired, login_rejection
+from cas_auth import AuthObserver, AuthenticationError, CredentialsRejected, InteractionRequired, load_browser_state, school_state
 import sport_bot
 
 
@@ -43,6 +43,33 @@ class ObserverTests(unittest.IsolatedAsyncioTestCase):
         await observer.response(response('https://login.xjtu.edu.cn/cas/mfa/detect', {'code': 1, 'message': 'example_private_username password incorrect'}))
         self.assertIsInstance(observer.error, CredentialsRejected)
         self.assertNotIn('example_private_username', str(observer.error))
+
+    async def test_interactive_mfa_waits_for_the_user(self):
+        observer = AuthObserver(interactive=True)
+        await observer.response(response('https://login.xjtu.edu.cn/cas/mfa/detect', {'code': 0, 'data': {'need': True}}))
+        self.assertIsNone(observer.error)
+        self.assertFalse(observer.finished.is_set())
+
+
+class StateTests(unittest.TestCase):
+    def test_export_is_scoped_and_omits_saved_passwords(self):
+        state = school_state({
+            'cookies': [{'domain': '.xjtu.edu.cn', 'name': 'example'}, {'domain': '.other.example', 'name': 'private'}],
+            'origins': [
+                {'origin': 'https://login.xjtu.edu.cn', 'localStorage': [{'name': 'fpVisitorId', 'value': 'example'}, {'name': 'password', 'value': 'private'}]},
+                {'origin': 'https://other.example', 'localStorage': []},
+            ],
+        })
+        self.assertEqual(len(state['cookies']), 1)
+        self.assertEqual(len(state['origins']), 1)
+        self.assertEqual([item['name'] for item in state['origins'][0]['localStorage']], ['fpVisitorId'])
+
+    def test_empty_or_invalid_state_is_handled(self):
+        self.assertIsNone(load_browser_state(''))
+        with self.assertRaises(AuthenticationError):
+            load_browser_state('not json')
+        with self.assertRaises(AuthenticationError):
+            load_browser_state('{"cookies": [], "origins": []}')
 
 
 class ExecutionTests(unittest.TestCase):

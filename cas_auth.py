@@ -1,7 +1,10 @@
 """Authenticate through XJTU's current, unmodified CAS web interface."""
 
 import asyncio
+import json
 import logging
+import os
+from pathlib import Path
 import re
 import time
 from urllib.parse import urlencode, urlparse
@@ -31,6 +34,50 @@ class CredentialsRejected(AuthenticationError):
     """The identity provider rejected the supplied credentials."""
 
 
+def school_state(state):
+    """Export only this application's school-domain browser state."""
+    def allowed(host):
+        return host == "xjtu.edu.cn" or host.endswith(".xjtu.edu.cn")
+
+    cookies = [cookie for cookie in state.get("cookies", []) if allowed(str(cookie.get("domain", "")).lstrip("."))]
+    origins = []
+    for origin in state.get("origins", []):
+        parsed = urlparse(origin.get("origin", ""))
+        if parsed.scheme == "https" and allowed(parsed.hostname or ""):
+            origins.append({
+                "origin": origin["origin"],
+                "localStorage": [item for item in origin.get("localStorage", []) if not any(word in item.get("name", "").lower() for word in ("password", "pwd"))],
+            })
+    return {"cookies": cookies, "origins": origins}
+
+
+def load_browser_state(raw):
+    if not raw:
+        return None
+    try:
+        state = json.loads(raw)
+        if not isinstance(state, dict) or not isinstance(state.get("cookies"), list) or not isinstance(state.get("origins"), list):
+            raise ValueError
+        filtered = school_state(state)
+        if not filtered["cookies"] and not filtered["origins"]:
+            raise ValueError
+        return filtered
+    except (ValueError, TypeError, KeyError, AttributeError):
+        raise AuthenticationError("SPORT_BROWSER_STATE 不是有效的学校浏览器会话，请重新执行首次登录配置。") from None
+
+
+def save_browser_state(path, state):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = json.dumps(school_state(state), ensure_ascii=True, separators=(",", ":"))
+    if len(data.encode("utf-8")) > 60000:
+        raise AuthenticationError("浏览器会话超过 Secrets 的单项容量，请使用专用登录窗口重新配置。")
+    descriptor = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+        output.write(data)
+    os.chmod(path, 0o600)
+
+
 def login_rejection(message):
     """Classify a server message without echoing potentially private content."""
     message = str(message).lower()
@@ -42,12 +89,13 @@ def login_rejection(message):
 
 
 class AuthObserver:
-    def __init__(self):
+    def __init__(self, interactive=False):
         self.token = None
         self.error = None
         self.finished = asyncio.Event()
         self.mfa_checked = False
         self.password_submitted = False
+        self.interactive = interactive
 
     def fail(self, error):
         if not self.token and not self.error:
@@ -72,13 +120,19 @@ class AuthObserver:
             self.mfa_checked = True
             logging.info("已执行学校页面的登录安全检查。")
             if response.status != 200 or payload.get("code") not in (0, "0"):
-                self.fail(login_rejection(payload.get("message", payload.get("msg", ""))))
+                if self.interactive:
+                    logging.warning("本次登录未通过，请在浏览器中核对并完成登录。")
+                else:
+                    self.fail(login_rejection(payload.get("message", payload.get("msg", ""))))
                 return
             data = payload.get("data")
             if not isinstance(data, dict):
                 self.fail(AuthenticationError("登录安全检查没有返回有效结果。"))
             elif data.get("need") is True or str(data.get("need")).lower() == "true":
-                self.fail(InteractionRequired("学校对本次云端登录要求额外安全验证（MFA）；需要本人完成验证。"))
+                if self.interactive:
+                    logging.warning("请在浏览器中本人完成学校的额外安全验证。")
+                else:
+                    self.fail(InteractionRequired("学校对本次云端登录要求额外安全验证（MFA）；请使用首次登录配置生成会话。"))
         else:
             data = payload.get("data")
             token = data.get("token") if isinstance(data, dict) else None
@@ -95,20 +149,23 @@ class AuthObserver:
             logging.info("学校页面已提交一次密码登录表单。")
 
 
-async def authenticate_async(username, password, *, headless=True, timeout_seconds=90):
+async def authenticate_async(username, password, *, headless=True, timeout_seconds=90, interactive=False, save_state_path=None):
     # Import lazily so pure unit tests do not need a browser installation.
     try:
         from playwright.async_api import async_playwright, Error, TimeoutError
     except ImportError as error:
         raise AuthenticationError("缺少 Playwright，请安装 requirements.txt 并安装 Chromium。") from error
 
-    observer = AuthObserver()
+    observer = AuthObserver(interactive=interactive)
     browser = None
     stage = "启动浏览器"
     try:
         async with async_playwright() as playwright:
             browser = await playwright.chromium.launch(headless=headless)
-            context = await browser.new_context(locale="zh-CN")
+            state = load_browser_state(os.getenv("SPORT_BROWSER_STATE", ""))
+            context = await browser.new_context(locale="zh-CN", storage_state=state)
+            if state:
+                logging.info("已载入配置的学校会话，将由服务器检查会话是否仍有效。")
 
             async def block_attendance(route):
                 # Authentication must never create or close an activity record.
@@ -124,11 +181,27 @@ async def authenticate_async(username, password, *, headless=True, timeout_secon
             form = page.locator(".login-form:visible").filter(
                 has=page.locator('input[type="password"]')
             ).first
-            stage = "切换账号密码登录"
-            if not await form.is_visible():
+            stage = "等待已有会话或密码登录表单"
+            prepare_deadline = time.monotonic() + 60
+            selected_password_menu = False
+            while not await form.is_visible() and not observer.finished.is_set():
+                if time.monotonic() >= prepare_deadline:
+                    raise AuthenticationError("认证页面未显示密码登录表单，也未完成已有会话的令牌交换。")
                 menu = page.get_by_role("menuitem", name=re.compile("账号密码|帳號密碼|Account|Password", re.I)).first
-                await menu.click(timeout=45000)
-            await form.wait_for(state="visible", timeout=45000)
+                if not selected_password_menu and await menu.is_visible():
+                    await menu.click()
+                    selected_password_menu = True
+                try:
+                    await asyncio.wait_for(observer.finished.wait(), timeout=0.25)
+                except asyncio.TimeoutError:
+                    pass
+            if observer.error:
+                raise observer.error
+            if observer.token:
+                if save_state_path:
+                    save_browser_state(save_state_path, await context.storage_state())
+                logging.info("已有学校会话认证及体育平台令牌交换成功。")
+                return observer.token
             parsed = urlparse(page.url)
             if parsed.scheme != "https" or parsed.hostname != AUTH_HOST:
                 raise AuthenticationError("登录页面不在学校认证域名，已停止提交。")
@@ -143,22 +216,27 @@ async def authenticate_async(username, password, *, headless=True, timeout_secon
                 }""",
                 timeout=20000,
             )
-            username_input = form.locator('input:not([type="password"]):visible').first
-            password_input = form.locator('input[type="password"]:visible').first
-            stage = "填写官方登录表单"
-            await username_input.fill(username)
-            await password_input.fill(password)
-            # The official page performs RSA encryption, execution-token handling,
-            # browser fingerprinting and the MFA check. Do not forge these values.
-            stage = "提交一次登录并等待平台回调"
-            await form.locator("button.login-btn").click()
+            if interactive:
+                stage = "等待本人在浏览器中完成登录与验证"
+                logging.info("请在打开的学校浏览器窗口中填写账号密码并完成本人验证，程序将等待最多 10 分钟。")
+            else:
+                username_input = form.locator('input:not([type="password"]):visible').first
+                password_input = form.locator('input[type="password"]:visible').first
+                stage = "填写官方登录表单"
+                await username_input.fill(username)
+                await password_input.fill(password)
+                # The official page performs RSA encryption, execution-token handling,
+                # browser fingerprinting and the MFA check. Do not forge these values.
+                stage = "提交一次登录并等待平台回调"
+                await form.locator("button.login-btn").click()
             deadline = time.monotonic() + timeout_seconds
             while not observer.finished.is_set() and time.monotonic() < deadline:
                 if await page.locator(".captcha-dialog-wrapper:visible").count():
-                    observer.fail(InteractionRequired("学校登录页面要求图形验证码，需要本人完成后再运行。"))
-                    break
+                    if not interactive:
+                        observer.fail(InteractionRequired("学校登录页面要求图形验证码，需要本人完成后再运行。"))
+                        break
                 rejection = page.locator(".login-error:visible")
-                if await rejection.count():
+                if not interactive and await rejection.count():
                     message = (await rejection.first.inner_text()).strip()
                     if message:
                         observer.fail(login_rejection(message))
@@ -170,6 +248,8 @@ async def authenticate_async(username, password, *, headless=True, timeout_secon
             if observer.error:
                 raise observer.error
             if observer.token:
+                if save_state_path:
+                    save_browser_state(save_state_path, await context.storage_state())
                 logging.info("CAS 登录和体育平台令牌交换成功。")
                 return observer.token
             raise AuthenticationError(
@@ -193,3 +273,7 @@ async def authenticate_async(username, password, *, headless=True, timeout_secon
 
 def authenticate(username, password, *, headless=True):
     return asyncio.run(authenticate_async(username, password, headless=headless))
+
+
+def setup_login(output_path):
+    return asyncio.run(authenticate_async("", "", headless=False, interactive=True, timeout_seconds=600, save_state_path=output_path))

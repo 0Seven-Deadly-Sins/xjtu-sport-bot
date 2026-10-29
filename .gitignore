@@ -4,3 +4,4 @@ __pycache__/
 sport_bot.log
 .env
 auth-state*.json
+.local/
