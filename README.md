@@ -1,74 +1,76 @@
-# XJTU 西安交大研究生体育打卡脚本
+# XJTU 体育签到脚本
 
-## 简介
+使用学校当前的 CAS 登录页面获取体育平台令牌，再执行签到及 31 分钟后的签退。认证由 Playwright Chromium 操作官方网页完成，页面自身处理 RSA 加密、动态表单参数、设备指纹与安全检查，不再依赖旧版 `route` 等 Cookie。
 
-此脚本用于西安交通大学研究生体美劳体育打卡系统的签到与签退，支持本地运行和 GitHub Actions 定时运行。脚本会先签到，等待 31 分钟后尝试签退，并可选发送邮件通知。
+## GitHub Actions 配置
 
-## 环境配置
+在 **Settings → Secrets and variables → Actions → Secrets** 中添加两个 Repository secrets：
 
-本地建议使用 Python 3.11，并安装以下依赖：
+| Name | Secret 值 |
+| --- | --- |
+| `SPORT_USER` | 学号 / 统一身份认证账号 |
+| `SPORT_PASSWORD` | 统一身份认证密码原文，不加额外引号、不提前加密 |
+
+打开 **Actions → XJTU Sport Bot → Run workflow**，选择 `main` 和运行模式：
+
+- `verify-login`：只验证 CAS 登录与体育平台令牌交换，不提交签到或签退。这是手动运行的默认模式。
+- `run`：执行签到，等待 31 分钟后尝试签退。
+
+定时任务保持每天北京时间 12:00 执行 `run`。GitHub 的定时调度可能延迟。
+
+新增的 **Verify CAS login (no attendance)** 工作流用于验证适配：先运行离线单元测试，再执行一次 `--auth-only` 登录。它不会执行体育签到或签退。**Auth entry diagnostics (no login)** 则只检查公开登录入口，不会发送账号密码。
+
+## 可选参数
+
+在 **Variables** 标签中配置：
+
+| Name | 默认值 / 用途 |
+| --- | --- |
+| `SPORT_LONGITUDE` | `108.654387`，经度 |
+| `SPORT_LATITUDE` | `34.257229`，纬度 |
+| `SPORT_SEND_EMAIL` | 默认 `false`；设为 `true` 启用邮件通知 |
+
+启用邮件通知时，还需要在 **Secrets** 中添加 `SMTP_AUTH_CODE`、`EMAIL_SENDER`、`EMAIL_RECEIVER`。SMTP 使用 QQ 邮箱 SSL 服务及邮箱授权码。
+
+## 本地使用
+
+建议使用 Python 3.11：
 
 ```bash
 python -m pip install -r requirements.txt
+python -m playwright install chromium
 ```
 
-账号信息通过环境变量读取，不要把学号、密码或邮箱授权码写入代码或提交到仓库。
-
-| 环境变量 | 用途 | 必需 |
-| --- | --- | --- |
-| `SPORT_USER` | 学号 | 是 |
-| `SPORT_PASSWORD` | 统一身份认证密码 | 是 |
-| `SPORT_LONGITUDE` | 签到经度；默认 `108.654387` | 否 |
-| `SPORT_LATITUDE` | 签到纬度；默认 `34.257229` | 否 |
-| `SPORT_SEND_EMAIL` | 设为 `true` 启用邮件通知；默认关闭 | 否 |
-| `SMTP_AUTH_CODE` | QQ 邮箱 SMTP 授权码 | 邮件通知启用时 |
-| `EMAIL_SENDER` | 发件人邮箱 | 邮件通知启用时 |
-| `EMAIL_RECEIVER` | 收件人邮箱 | 邮件通知启用时 |
-
-## GitHub Actions 定时运行
-
-工作流位于 `.github/workflows/sport-bot.yml`，默认每天北京时间 12:00 运行，也可以从 Actions 页面手动触发。GitHub 的计划任务偶尔会因负载延迟启动。
-
-1. 打开仓库的 **Settings → Secrets and variables → Actions**。
-2. 在 **Repository secrets** 中添加：
-   - `SPORT_USER`
-   - `SPORT_PASSWORD`
-3. 如需邮件通知，再添加以下 secrets：
-   - `SMTP_AUTH_CODE`
-   - `EMAIL_SENDER`
-   - `EMAIL_RECEIVER`
-4. 如需更改默认坐标，在 **Variables** 中添加 `SPORT_LONGITUDE` 和 `SPORT_LATITUDE`。
-5. 如需启用邮件通知，在 **Variables** 中添加 `SPORT_SEND_EMAIL`，值设为 `true`。
-6. 打开 **Actions → XJTU Sport Bot → Run workflow** 可手动运行一次；之后定时任务会按计划运行。
-
-工作流成功与否会反映在 Actions 运行结果中。不要在 issue、提交记录或聊天中发送账号密码和邮箱授权码。
-
-## 本地运行
-
-macOS / Linux：
-
-```bash
-export SPORT_USER="你的学号"
-export SPORT_PASSWORD="你的密码"
-python sport_bot.py
-```
-
-PowerShell：
+PowerShell 中设置当前会话的环境变量后，可先验证登录：
 
 ```powershell
 $env:SPORT_USER = "你的学号"
 $env:SPORT_PASSWORD = "你的密码"
-python .\sport_bot.py
+python sport_bot.py --auth-only
 ```
 
-运行日志写入 `sport_bot.log`，同时会输出到终端。
+执行完整流程：
 
-## 登录问题诊断
+```bash
+python sport_bot.py
+```
 
-新增的工作流 `Auth entry diagnostics (no login)` 仅发送无账号密码的 GET 请求，用于记录认证入口的状态码、跳转主机及 Cookie 名称；它不会执行登录或打卡。其绿色结果只表示诊断完成，不代表账号认证或打卡成功。
+本地调试可加 `--headed` 显示浏览器窗口。日志输出到终端和 `sport_bot.log`，不会记录密码、Cookie 值或登录令牌。
 
-2026-10-29 的 GitHub 云端诊断中，原认证入口返回 302 并跳转至 CAS 登录页，原脚本依赖的 `route`、`rdstate`、`cur_appId_`、`state` 均未返回。若出现此类初始化错误，账号密码尚未提交，不能据此判定密码错误。脚本现在会打印相应的初始化诊断信息，不会打印密码或 Cookie 值。
+## 失败状态
 
-## 免责声明
+- 退出码 `0`：本次所选模式执行成功。`--auth-only` 成功不代表已经打卡。
+- 退出码 `1`：配置、登录、网络或业务接口失败，按日志中的具体阶段排查。
+- 退出码 `2`：学校要求本次登录完成验证码或 MFA。程序停止并明确提示，不会伪造验证结果或反复尝试密码。
 
-请仅在符合学校规定及课程要求的场景中使用，并确保打卡记录与实际活动相符。使用此脚本所产生的任何后果由使用者自行承担。
+脚本只提交一次登录操作，不会自动重试失败的签到或签退。签到成功后若签退失败，需要及时在官方平台处理。
+
+离线单元测试：
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+## 使用说明
+
+请在符合学校规定和课程要求的场景中使用，确保记录与实际活动相符。账号、密码、邮箱授权码及浏览器会话信息均不应提交到仓库。

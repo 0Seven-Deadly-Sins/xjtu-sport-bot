@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.venv/
+sport_bot.log
+.env
+auth-state*.json

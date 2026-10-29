@@ -1,0 +1,36 @@
+name: Verify CAS login (no attendance)
+
+on:
+  push:
+    paths:
+      - ".github/workflows/auth-check.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sport-bot
+  cancel-in-progress: false
+
+jobs:
+  verify-login:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Check authentication and operation guards
+        run: python -m unittest discover -s tests -v
+      - name: Install Chromium
+        run: python -m playwright install --with-deps chromium
+      - name: Verify one login without attendance
+        env:
+          SPORT_USER: ${{ secrets.SPORT_USER }}
+          SPORT_PASSWORD: ${{ secrets.SPORT_PASSWORD }}
+          PYTHONUNBUFFERED: "1"
+        run: python sport_bot.py --auth-only

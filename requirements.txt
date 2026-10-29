@@ -1,2 +1,2 @@
-requests==2.32.4
-pycryptodome==3.23.0
+requests==2.34.2
+playwright==1.64.1

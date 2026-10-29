@@ -5,6 +5,14 @@ on:
     - cron: "0 12 * * *"
       timezone: "Asia/Shanghai"
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "verify-login 只验证登录；run 执行签到及 31 分钟后的签退"
+        type: choice
+        default: verify-login
+        options:
+          - verify-login
+          - run
 
 permissions:
   contents: read
@@ -15,26 +23,32 @@ concurrency:
 
 jobs:
   attendance:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
-    env:
-      SPORT_USER: ${{ secrets.SPORT_USER }}
-      SPORT_PASSWORD: ${{ secrets.SPORT_PASSWORD }}
-      SPORT_LONGITUDE: ${{ vars.SPORT_LONGITUDE }}
-      SPORT_LATITUDE: ${{ vars.SPORT_LATITUDE }}
-      SPORT_SEND_EMAIL: ${{ vars.SPORT_SEND_EMAIL }}
-      SMTP_AUTH_CODE: ${{ secrets.SMTP_AUTH_CODE }}
-      EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
-      EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
-      PYTHONUNBUFFERED: "1"
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-      - name: Install dependencies
-        run: python -m pip install --upgrade pip && pip install -r requirements.txt
-      - name: Run sport bot
-        run: python sport_bot.py
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Install Chromium
+        run: python -m playwright install --with-deps chromium
+      - name: Authenticate or run attendance
+        env:
+          RUN_MODE: ${{ github.event_name == 'schedule' && 'run' || inputs.mode || 'verify-login' }}
+          SPORT_USER: ${{ secrets.SPORT_USER }}
+          SPORT_PASSWORD: ${{ secrets.SPORT_PASSWORD }}
+          SPORT_LONGITUDE: ${{ vars.SPORT_LONGITUDE }}
+          SPORT_LATITUDE: ${{ vars.SPORT_LATITUDE }}
+          SPORT_SEND_EMAIL: ${{ vars.SPORT_SEND_EMAIL }}
+          SMTP_AUTH_CODE: ${{ secrets.SMTP_AUTH_CODE }}
+          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+          EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
+          PYTHONUNBUFFERED: "1"
+        run: |
+          if [ "$RUN_MODE" = "run" ]; then
+            python sport_bot.py
+          else
+            python sport_bot.py --auth-only
+          fi
