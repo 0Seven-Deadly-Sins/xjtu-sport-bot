@@ -1,0 +1,129 @@
+name: Diagnose unattended authentication (no attendance)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sport-bot
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Inspect token timing and official local-account login
+        id: inspect
+        env:
+          SPORT_TOKEN: ${{ secrets.SPORT_TOKEN }}
+          SPORT_USER: ${{ secrets.SPORT_USER }}
+          SPORT_PASSWORD: ${{ secrets.SPORT_PASSWORD }}
+          PYTHONUNBUFFERED: "1"
+        run: |
+          python - <<'PY'
+          import base64
+          from datetime import datetime, timezone
+          import json
+          import os
+          import uuid
+          import requests
+          from cas_auth import AuthenticationError
+          from token_auth import parse_token, verify_token, VERIFY_URL
+
+          def status_code(value):
+              if isinstance(value, int) and not isinstance(value, bool) and 100 <= value <= 599:
+                  return value
+              if isinstance(value, str) and len(value) == 3 and value.isascii() and value.isdigit():
+                  return int(value)
+              return 'not-a-standard-status'
+
+          def inspect_response(response, label):
+              print(f'{label}: HTTP {response.status_code}')
+              try:
+                  data = response.json()
+              except ValueError:
+                  print(f'{label}: non-JSON response')
+                  return {}
+              if not isinstance(data, dict):
+                  print(f'{label}: non-object response')
+                  return {}
+              print(f'{label}: platform_code={status_code(data.get("code"))}, success={data.get("success") is True or data.get("success") == "true"}')
+              return data
+
+          raw = os.getenv('SPORT_TOKEN', '')
+          if raw:
+              token = parse_token(raw)
+              # Only print timestamp claims, never identity, signature, or token.
+              try:
+                  part = token.split('.')[1]
+                  claims = json.loads(base64.urlsafe_b64decode(part + '=' * (-len(part) % 4)))
+              except (IndexError, ValueError, TypeError):
+                  claims = {}
+              for key in ('iat', 'exp', 'nbf'):
+                  value = claims.get(key) if isinstance(claims, dict) else None
+                  if isinstance(value, (int, float)) and not isinstance(value, bool) and 0 <= value <= 4102444800:
+                      print(f'Unverified JWT {key}: {datetime.fromtimestamp(value, timezone.utc).isoformat()}')
+                      if key == 'exp':
+                          print(f'Unverified JWT exp in past: {value < datetime.now(timezone.utc).timestamp()}')
+                  else:
+                      print(f'Unverified JWT {key}: absent or not a timestamp')
+              try:
+                  inspect_response(requests.get(VERIFY_URL, headers={'token': token}, timeout=30), 'Stored token check')
+              except requests.RequestException:
+                  print('Stored token check: network error (details omitted)')
+
+          user, password = os.getenv('SPORT_USER', ''), os.getenv('SPORT_PASSWORD', '')
+          local_ok = False
+          if user and password:
+              # Exactly the official local-account form's endpoint and payload.
+              # One attempt, with the existing credentials; no password guessing.
+              try:
+                  response = requests.post(
+                      'https://ipahw.xjtu.edu.cn/szjy-boot/system/login',
+                      json={'gsessionId': '', 'reqData': {'username': user, 'password': password, 'uuid': str(uuid.uuid4())}},
+                      timeout=30,
+                  )
+                  payload = inspect_response(response, 'Official local-account login')
+                  data = payload.get('data')
+                  new_token = data.get('token') if isinstance(data, dict) else None
+                  if response.status_code == 200 and isinstance(new_token, str) and new_token:
+                      print('::add-mask::' + new_token)
+                      verify_token(parse_token(new_token))
+                      local_ok = True
+                      print('Official local-account login: obtained and verified a new token')
+                  else:
+                      print('Official local-account login: no new token; existing CAS credentials may not be local-account credentials')
+              except requests.RequestException:
+                  print('Official local-account login: network error (details omitted)')
+              except AuthenticationError:
+                  print('Official local-account login: returned token did not pass read-only verification')
+          else:
+              print('Official local-account login: credentials not configured')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'local_ok={str(local_ok).lower()}\n')
+          PY
+      - name: Install browser dependencies
+        if: steps.inspect.outputs.local_ok != 'true'
+        run: python -m pip install -r requirements-browser.txt
+      - name: Install Chromium
+        if: steps.inspect.outputs.local_ok != 'true'
+        run: python -m playwright install --with-deps chromium
+      - name: Test one official CAS login without attendance
+        if: steps.inspect.outputs.local_ok != 'true'
+        env:
+          SPORT_TOKEN: ""
+          SPORT_USER: ${{ secrets.SPORT_USER }}
+          SPORT_PASSWORD: ${{ secrets.SPORT_PASSWORD }}
+          SPORT_BROWSER_STATE: ${{ secrets.SPORT_BROWSER_STATE }}
+          PYTHONUNBUFFERED: "1"
+        run: python sport_bot.py --auth-only
+
