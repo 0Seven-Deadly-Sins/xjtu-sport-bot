@@ -2,7 +2,7 @@ import logging
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
-from cas_auth import AuthObserver, AuthenticationError, CredentialsRejected, InteractionRequired, load_browser_state, school_state
+from cas_auth import AuthObserver, AuthenticationError, CredentialsRejected, InteractionRequired, initial_platform_tokens, load_browser_state, read_new_platform_token, school_state
 import sport_bot
 
 
@@ -66,6 +66,50 @@ class ObserverTests(unittest.IsolatedAsyncioTestCase):
         await observer.response(item)
         self.assertIsNone(observer.error)
         self.assertFalse(observer.finished.is_set())
+
+    async def test_unreadable_response_does_not_claim_success_or_abort_navigation(self):
+        observer = AuthObserver()
+        item = response('https://ipahw.xjtu.edu.cn/szjy-boot/sso/codeLogin', {}, status=200)
+        item.headers = {'content-type': 'text/html; charset=utf-8'}
+        item.json.side_effect = ValueError('example private body')
+        await observer.response(item)
+        self.assertIsNone(observer.token)
+        self.assertIsNone(observer.error)
+        self.assertIsInstance(observer.response_problem, AuthenticationError)
+        self.assertNotIn('example private body', str(observer.response_problem))
+
+
+class StorageTokenTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.page = Mock(url='https://ipahw.xjtu.edu.cn/pages/tabbar/index')
+        self.page.evaluate = AsyncMock(return_value=['new_example_token', None])
+        self.context = Mock()
+        self.context.request.get = AsyncMock(return_value=response('https://ipahw.xjtu.edu.cn/szjy-boot/api/v1/system/user/getInfo', {'success': True, 'code': 200}))
+
+    async def test_new_storage_token_requires_a_real_read_only_check(self):
+        self.assertEqual(await read_new_platform_token(self.page, self.context, set()), 'new_example_token')
+        self.context.request.get.assert_awaited_once()
+        self.assertIn('/api/v1/system/user/getInfo', self.context.request.get.call_args.args[0])
+
+    async def test_existing_seed_token_cannot_prove_renewal(self):
+        self.assertIsNone(await read_new_platform_token(self.page, self.context, {'new_example_token'}))
+        self.context.request.get.assert_not_called()
+
+    async def test_rejected_token_does_not_complete_login(self):
+        self.context.request.get.return_value.json.return_value = {'success': False, 'code': 401}
+        self.assertIsNone(await read_new_platform_token(self.page, self.context, set()))
+
+    async def test_other_origins_cannot_supply_tokens(self):
+        self.page.url = 'https://other.example/'
+        self.assertIsNone(await read_new_platform_token(self.page, self.context, set()))
+        self.page.evaluate.assert_not_called()
+
+    def test_seed_tokens_are_scoped_and_accept_both_storage_names(self):
+        state = {'origins': [
+            {'origin': 'https://ipahw.xjtu.edu.cn', 'localStorage': [{'name': 'token', 'value': 'example_old'}, {'name': '_token', 'value': '{"data":"example_wrapped"}'}]},
+            {'origin': 'https://other.example', 'localStorage': [{'name': 'token', 'value': 'untrusted'}]},
+        ]}
+        self.assertEqual(initial_platform_tokens(state), {'example_old', 'example_wrapped'})
 
 
 class StateTests(unittest.TestCase):

@@ -70,7 +70,7 @@ def save_browser_state(path, state):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     data = json.dumps(school_state(state), ensure_ascii=True, separators=(",", ":"))
-    if len(data.encode("utf-8")) > 60000:
+    if len(data.encode("utf-8")) > 48000:
         raise AuthenticationError("浏览器会话超过 Secrets 的单项容量，请使用专用登录窗口重新配置。")
     descriptor = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(descriptor, "w", encoding="utf-8") as output:
@@ -96,6 +96,7 @@ class AuthObserver:
         self.mfa_checked = False
         self.password_submitted = False
         self.interactive = interactive
+        self.response_problem = None
 
     def fail(self, error):
         if not self.token and not self.error:
@@ -108,16 +109,22 @@ class AuthObserver:
         is_token = parsed.scheme == "https" and parsed.hostname == SPORT_HOST and parsed.path == TOKEN_PATH
         if not (is_mfa or is_token):
             return
+        label = "安全检查" if is_mfa else "平台令牌交换"
+        headers = getattr(response, "headers", {})
+        mime = headers.get("content-type", "").split(";", 1)[0].lower() if isinstance(headers, dict) else ""
+        if mime not in {"application/json", "text/json", "text/html", "text/plain"}:
+            mime = "未识别类型"
+        logging.info("%s响应：HTTP %s，%s。", label, response.status, mime)
         if 300 <= response.status < 400:
             # A redirect has no JSON body; wait for the final callback instead.
             return
         try:
             payload = await response.json()
         except Exception:
-            if self.interactive:
-                logging.warning("认证接口暂未返回 JSON（%s，HTTP %s）；请在学校页面核对，配置窗口继续等待。", "安全检查" if is_mfa else "平台回调", response.status)
-                return
-            self.fail(AuthenticationError("认证接口返回了非 JSON 数据，登录未完成。"))
+            # Navigation can make a browser response body unavailable. A missing
+            # body is not authentication success; wait for a verifiable token.
+            self.response_problem = AuthenticationError("%s响应无法解析为 JSON（HTTP %s，%s）。" % (label, response.status, mime))
+            logging.warning("%s 将继续等待平台回调或通过只读接口校验页面中的新令牌。", self.response_problem)
             return
         if not isinstance(payload, dict):
             self.fail(AuthenticationError("认证接口响应格式不符合预期。"))
@@ -155,6 +162,53 @@ class AuthObserver:
             logging.info("学校页面已提交一次密码登录表单。")
 
 
+def initial_platform_tokens(state):
+    from token_auth import parse_token
+
+    tokens = set()
+    for origin in (state or {}).get("origins", []):
+        if origin.get("origin") != "https://" + SPORT_HOST:
+            continue
+        for item in origin.get("localStorage", []):
+            if item.get("name") in {"token", "_token"}:
+                try:
+                    tokens.add(parse_token(item.get("value", "")))
+                except AuthenticationError:
+                    pass
+    return tokens
+
+
+async def read_new_platform_token(page, context, checked_tokens):
+    """Accept only a new token from the school origin and a real read-only check."""
+    from token_auth import VERIFY_URL, parse_token
+
+    parsed = urlparse(page.url)
+    if parsed.scheme != "https" or parsed.hostname != SPORT_HOST:
+        return None
+    try:
+        values = await page.evaluate("() => [localStorage.getItem('token'), localStorage.getItem('_token')]")
+        for value in values:
+            if not isinstance(value, str) or not value:
+                continue
+            try:
+                token = parse_token(value)
+            except AuthenticationError:
+                continue
+            if token in checked_tokens:
+                continue
+            checked_tokens.add(token)
+            response = await context.request.get(VERIFY_URL, headers={"token": token}, timeout=30000)
+            payload = await response.json()
+            if response.status == 200 and isinstance(payload, dict) and payload.get("code") not in (401, 403, "401", "403") and (payload.get("success") is True or payload.get("success") == "true"):
+                logging.info("已从体育平台页面取得新令牌，并通过真实只读接口校验。")
+                return token
+            logging.warning("平台页面中的新令牌未通过只读校验。")
+    except Exception:
+        # Browser exceptions and API bodies may contain credentials; omit them.
+        return None
+    return None
+
+
 async def authenticate_async(username, password, *, headless=True, timeout_seconds=90, interactive=False, save_state_path=None, browser_channel=None):
     # Import lazily so pure unit tests do not need a browser installation.
     try:
@@ -175,6 +229,7 @@ async def authenticate_async(username, password, *, headless=True, timeout_secon
             seed = os.getenv("SPORT_BROWSER_STATE", "")
             cache_path = os.getenv("SPORT_SESSION_CACHE", "")
             state = restore_state(seed, cache_path)
+            checked_tokens = initial_platform_tokens(state)
             context = await browser.new_context(locale="zh-CN", storage_state=state)
             if state:
                 logging.info("已载入配置的学校会话，将由服务器检查会话是否仍有效。")
@@ -197,6 +252,11 @@ async def authenticate_async(username, password, *, headless=True, timeout_secon
             prepare_deadline = time.monotonic() + 60
             selected_password_menu = False
             while not await form.is_visible() and not observer.finished.is_set():
+                observed = await read_new_platform_token(page, context, checked_tokens)
+                if observed:
+                    observer.token = observed
+                    observer.finished.set()
+                    break
                 if time.monotonic() >= prepare_deadline:
                     raise AuthenticationError("认证页面未显示密码登录表单，也未完成已有会话的令牌交换。")
                 menu = page.get_by_role("menuitem", name=re.compile("账号密码|帳號密碼|Account|Password", re.I)).first
@@ -246,6 +306,11 @@ async def authenticate_async(username, password, *, headless=True, timeout_secon
                 await form.locator("button.login-btn").click()
             deadline = time.monotonic() + timeout_seconds
             while not observer.finished.is_set() and time.monotonic() < deadline:
+                observed = await read_new_platform_token(page, context, checked_tokens)
+                if observed:
+                    observer.token = observed
+                    observer.finished.set()
+                    break
                 if interactive:
                     trust = page.get_by_role("checkbox", name="登录成功后，设为可信客户端")
                     if await trust.count() and await trust.is_visible() and not await trust.is_checked():
@@ -273,6 +338,8 @@ async def authenticate_async(username, password, *, headless=True, timeout_secon
                     save_browser_state(save_state_path, await context.storage_state())
                 logging.info("CAS 登录和体育平台令牌交换成功。")
                 return observer.token
+            if observer.response_problem:
+                raise observer.response_problem
             raise AuthenticationError(
                 "登录未在规定时间内完成；安全检查=%s，表单提交=%s。"
                 % (observer.mfa_checked, observer.password_submitted)
