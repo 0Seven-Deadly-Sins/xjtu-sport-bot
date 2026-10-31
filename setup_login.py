@@ -38,6 +38,8 @@ def show_copy_window(path):
 def main():
     parser = argparse.ArgumentParser(description="在本地浏览器中本人完成登录，再生成 Actions 会话配置。")
     parser.add_argument("--copy-existing", action="store_true", help="复制上次生成的会话，不重新登录")
+    parser.add_argument("--browser-channel", choices=["msedge", "chrome"], help="使用已安装的 Edge 或 Chrome，无需下载 Chromium")
+    parser.add_argument("--no-copy-ui", action="store_true", help="保存会话后退出，由配置程序直接上传 Secret")
     parser.add_argument("--output", default=str(Path(__file__).with_name(".local") / "auth-state.json"))
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -48,9 +50,10 @@ def main():
         else:
             # Account/password and any MFA response are entered by the user in
             # the official browser page, never in this terminal or a GitHub file.
-            setup_login(path)
+            setup_login(path, browser_channel=args.browser_channel)
         logging.info("会话已保存在本机受忽略的 .local 目录；请勿上传到代码仓库。")
-        show_copy_window(path)
+        if not args.no_copy_ui:
+            show_copy_window(path)
         return 0
     except AuthenticationError as error:
         logging.error("%s", error)

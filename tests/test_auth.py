@@ -77,6 +77,9 @@ class ExecutionTests(unittest.TestCase):
         self.config = patch.multiple(sport_bot.Config, TOKEN='', USER='example_student', PASSWORD='example_password', SEND_EMAIL=False)
         self.config.start()
         self.addCleanup(self.config.stop)
+        self.verify = patch('sport_bot.verify_token', return_value='example_token')
+        self.verify.start()
+        self.addCleanup(self.verify.stop)
 
     @patch('sport_bot.sign_operation')
     @patch('sport_bot.authenticate', return_value='example_token')

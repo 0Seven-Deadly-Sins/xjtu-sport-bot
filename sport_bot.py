@@ -9,13 +9,14 @@ import time
 import requests
 
 from cas_auth import authenticate, AuthenticationError, InteractionRequired
-from token_auth import parse_token, verify_token
+from token_auth import TokenExpired, parse_token, verify_token
 
 
 class Config:
     TOKEN = os.getenv("SPORT_TOKEN", "")
     USER = os.getenv("SPORT_USER", "")
     PASSWORD = os.getenv("SPORT_PASSWORD", "")
+    BROWSER_STATE = os.getenv("SPORT_BROWSER_STATE", "")
     LONGITUDE = os.getenv("SPORT_LONGITUDE") or "108.654387"
     LATITUDE = os.getenv("SPORT_LATITUDE") or "34.257229"
     SEND_EMAIL = os.getenv("SPORT_SEND_EMAIL", "false").strip().lower() in {"1", "true", "yes", "on"}
@@ -89,9 +90,40 @@ def send_email(content):
         logging.error("邮件发送失败，请检查邮箱 SMTP 配置。")
 
 
+def check_saved_token():
+    """0: valid token; 3: install browser for renewal; 1: other failure."""
+    if not Config.TOKEN:
+        return 3
+    try:
+        verify_token(parse_token(Config.TOKEN))
+        logging.info("现有 token 有效，本次无需安装浏览器。")
+        return 0
+    except TokenExpired as error:
+        logging.info("%s 将准备官方浏览器续登。", error)
+        return 3
+    except AuthenticationError as error:
+        logging.error("%s", error)
+        return 1
+
+
+def obtain_token(*, headed=False):
+    if Config.TOKEN:
+        token = parse_token(Config.TOKEN)
+        try:
+            verify_token(token)
+            logging.info("SPORT_TOKEN 已通过体育平台只读接口校验，无需浏览器登录。")
+            return token
+        except TokenExpired as error:
+            logging.warning("%s 正在通过官方 CAS 重新获取 token。", error)
+    token = authenticate(Config.USER, Config.PASSWORD, headless=not headed)
+    verify_token(token)
+    logging.info("官方登录取得的新 token 已通过体育平台只读校验。")
+    return token
+
+
 def run(*, auth_only=False, headed=False):
-    if not Config.TOKEN and (not Config.USER or not Config.PASSWORD):
-        logging.error("请在 Actions Secrets 中设置 SPORT_TOKEN；或使用账号密码登录方案。")
+    if not Config.TOKEN and not Config.BROWSER_STATE and (not Config.USER or not Config.PASSWORD):
+        logging.error("请配置 SPORT_TOKEN，或 SPORT_BROWSER_STATE / SPORT_USER / SPORT_PASSWORD 登录方案。")
         return 1
     try:
         longitude, latitude = float(Config.LONGITUDE), float(Config.LATITUDE)
@@ -101,12 +133,7 @@ def run(*, auth_only=False, headed=False):
         logging.error("坐标格式或范围错误，请检查 SPORT_LONGITUDE / SPORT_LATITUDE。")
         return 1
     try:
-        if Config.TOKEN:
-            token = parse_token(Config.TOKEN)
-            verify_token(token)
-            logging.info("SPORT_TOKEN 已通过体育平台只读接口校验，无需浏览器登录。")
-        else:
-            token = authenticate(Config.USER, Config.PASSWORD, headless=not headed)
+        token = obtain_token(headed=headed)
     except InteractionRequired as error:
         logging.error("%s", error)
         return 2
@@ -142,10 +169,14 @@ def run(*, auth_only=False, headed=False):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--auth-only", action="store_true", help="只验证登录，不提交签到或签退")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--auth-only", action="store_true", help="只验证登录，不提交签到或签退")
+    modes.add_argument("--check-token", action="store_true", help="只检查已有 token；退出码 3 表示需要浏览器续登")
     parser.add_argument("--headed", action="store_true", help="本地显示 Chromium 窗口")
     args = parser.parse_args()
     configure_logging()
+    if args.check_token:
+        return check_saved_token()
     return run(auth_only=args.auth_only, headed=args.headed)
 
 

@@ -149,7 +149,7 @@ class AuthObserver:
             logging.info("学校页面已提交一次密码登录表单。")
 
 
-async def authenticate_async(username, password, *, headless=True, timeout_seconds=90, interactive=False, save_state_path=None):
+async def authenticate_async(username, password, *, headless=True, timeout_seconds=90, interactive=False, save_state_path=None, browser_channel=None):
     # Import lazily so pure unit tests do not need a browser installation.
     try:
         from playwright.async_api import async_playwright, Error, TimeoutError
@@ -161,8 +161,14 @@ async def authenticate_async(username, password, *, headless=True, timeout_secon
     stage = "启动浏览器"
     try:
         async with async_playwright() as playwright:
-            browser = await playwright.chromium.launch(headless=headless)
-            state = load_browser_state(os.getenv("SPORT_BROWSER_STATE", ""))
+            from session_cache import persist_state, restore_state
+            launch_options = {"headless": headless}
+            if browser_channel in {"msedge", "chrome"}:
+                launch_options["channel"] = browser_channel
+            browser = await playwright.chromium.launch(**launch_options)
+            seed = os.getenv("SPORT_BROWSER_STATE", "")
+            cache_path = os.getenv("SPORT_SESSION_CACHE", "")
+            state = restore_state(seed, cache_path)
             context = await browser.new_context(locale="zh-CN", storage_state=state)
             if state:
                 logging.info("已载入配置的学校会话，将由服务器检查会话是否仍有效。")
@@ -198,6 +204,7 @@ async def authenticate_async(username, password, *, headless=True, timeout_secon
             if observer.error:
                 raise observer.error
             if observer.token:
+                persist_state(seed, cache_path, await context.storage_state())
                 if save_state_path:
                     save_browser_state(save_state_path, await context.storage_state())
                 logging.info("已有学校会话认证及体育平台令牌交换成功。")
@@ -220,6 +227,8 @@ async def authenticate_async(username, password, *, headless=True, timeout_secon
                 stage = "等待本人在浏览器中完成登录与验证"
                 logging.info("请在打开的学校浏览器窗口中填写账号密码并完成本人验证，程序将等待最多 10 分钟。")
             else:
+                if not username or not password:
+                    raise AuthenticationError("已有会话未能完成续登，且未配置 SPORT_USER / SPORT_PASSWORD。")
                 username_input = form.locator('input:not([type="password"]):visible').first
                 password_input = form.locator('input[type="password"]:visible').first
                 stage = "填写官方登录表单"
@@ -231,6 +240,11 @@ async def authenticate_async(username, password, *, headless=True, timeout_secon
                 await form.locator("button.login-btn").click()
             deadline = time.monotonic() + timeout_seconds
             while not observer.finished.is_set() and time.monotonic() < deadline:
+                if interactive:
+                    trust = page.get_by_role("checkbox", name="登录成功后，设为可信客户端")
+                    if await trust.count() and await trust.is_visible() and not await trust.is_checked():
+                        await trust.check()
+                        logging.info("已选择学校提供的可信客户端选项。")
                 if await page.locator(".captcha-dialog-wrapper:visible").count():
                     if not interactive:
                         observer.fail(InteractionRequired("学校登录页面要求图形验证码，需要本人完成后再运行。"))
@@ -248,6 +262,7 @@ async def authenticate_async(username, password, *, headless=True, timeout_secon
             if observer.error:
                 raise observer.error
             if observer.token:
+                persist_state(seed, cache_path, await context.storage_state())
                 if save_state_path:
                     save_browser_state(save_state_path, await context.storage_state())
                 logging.info("CAS 登录和体育平台令牌交换成功。")
@@ -275,5 +290,5 @@ def authenticate(username, password, *, headless=True):
     return asyncio.run(authenticate_async(username, password, headless=headless))
 
 
-def setup_login(output_path):
-    return asyncio.run(authenticate_async("", "", headless=False, interactive=True, timeout_seconds=600, save_state_path=output_path))
+def setup_login(output_path, *, browser_channel=None):
+    return asyncio.run(authenticate_async("", "", headless=False, interactive=True, timeout_seconds=600, save_state_path=output_path, browser_channel=browser_channel))

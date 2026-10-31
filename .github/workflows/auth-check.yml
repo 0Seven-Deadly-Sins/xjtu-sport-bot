@@ -4,6 +4,12 @@ on:
   push:
     paths:
       - ".github/workflows/auth-check.yml"
+      - "cas_auth.py"
+      - "token_auth.py"
+      - "session_cache.py"
+      - "sport_bot.py"
+      - "tests/**"
+      - "requirements*.txt"
   workflow_dispatch:
 
 permissions:
@@ -39,11 +45,37 @@ jobs:
             echo "ready=false" >> "$GITHUB_OUTPUT"
             echo "Browser session is not configured. Unit tests passed; live login was skipped." >> "$GITHUB_STEP_SUMMARY"
           fi
-          if [ -n "$SPORT_TOKEN" ]; then
-            echo "browser=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "browser=true" >> "$GITHUB_OUTPUT"
+          status=0
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] || [ -n "$SPORT_BROWSER_STATE" ] || [ -n "$SPORT_TOKEN" ]; then
+            python sport_bot.py --check-token || status=$?
           fi
+          if [ "$status" = "0" ] && [ -n "$SPORT_TOKEN" ]; then
+            echo "browser=false" >> "$GITHUB_OUTPUT"
+          elif [ "$status" = "3" ] || [ -z "$SPORT_TOKEN" ]; then
+            echo "browser=true" >> "$GITHUB_OUTPUT"
+          else
+            exit "$status"
+          fi
+      - name: Identify encrypted session cache
+        id: cache
+        if: steps.session.outputs.ready == 'true' && steps.session.outputs.browser == 'true'
+        env:
+          SPORT_BROWSER_STATE: ${{ secrets.SPORT_BROWSER_STATE }}
+        run: |
+          python - <<'PY'
+          import os
+          from session_cache import cache_scope
+          seed = os.getenv('SPORT_BROWSER_STATE', '')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'configured={str(bool(seed)).lower()}\n')
+              output.write(f'scope={cache_scope(seed) if seed else "none"}\n')
+          PY
+      - uses: actions/cache/restore@v4
+        if: steps.cache.outputs.configured == 'true'
+        with:
+          path: .local/cloud-session.enc
+          key: school-session-v1-${{ runner.os }}-${{ steps.cache.outputs.scope }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: school-session-v1-${{ runner.os }}-${{ steps.cache.outputs.scope }}-
       - name: Install browser dependencies when needed
         if: steps.session.outputs.ready == 'true' && steps.session.outputs.browser == 'true'
         run: python -m pip install -r requirements-browser.txt
@@ -57,5 +89,11 @@ jobs:
           SPORT_TOKEN: ${{ secrets.SPORT_TOKEN }}
           SPORT_PASSWORD: ${{ secrets.SPORT_PASSWORD }}
           SPORT_BROWSER_STATE: ${{ secrets.SPORT_BROWSER_STATE }}
+          SPORT_SESSION_CACHE: .local/cloud-session.enc
           PYTHONUNBUFFERED: "1"
         run: python sport_bot.py --auth-only
+      - uses: actions/cache/save@v4
+        if: always() && steps.cache.outputs.configured == 'true' && hashFiles('.local/cloud-session.updated') != ''
+        with:
+          path: .local/cloud-session.enc
+          key: school-session-v1-${{ runner.os }}-${{ steps.cache.outputs.scope }}-${{ github.run_id }}-${{ github.run_attempt }}
