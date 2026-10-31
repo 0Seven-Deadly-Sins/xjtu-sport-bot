@@ -108,9 +108,15 @@ class AuthObserver:
         is_token = parsed.scheme == "https" and parsed.hostname == SPORT_HOST and parsed.path == TOKEN_PATH
         if not (is_mfa or is_token):
             return
+        if 300 <= response.status < 400:
+            # A redirect has no JSON body; wait for the final callback instead.
+            return
         try:
             payload = await response.json()
         except Exception:
+            if self.interactive:
+                logging.warning("认证接口暂未返回 JSON（%s，HTTP %s）；请在学校页面核对，配置窗口继续等待。", "安全检查" if is_mfa else "平台回调", response.status)
+                return
             self.fail(AuthenticationError("认证接口返回了非 JSON 数据，登录未完成。"))
             return
         if not isinstance(payload, dict):
@@ -225,7 +231,7 @@ async def authenticate_async(username, password, *, headless=True, timeout_secon
             )
             if interactive:
                 stage = "等待本人在浏览器中完成登录与验证"
-                logging.info("请在打开的学校浏览器窗口中填写账号密码并完成本人验证，程序将等待最多 10 分钟。")
+                logging.info("请在打开的学校浏览器窗口中填写账号密码并完成本人验证，程序将等待最多 30 分钟。")
             else:
                 if not username or not password:
                     raise AuthenticationError("已有会话未能完成续登，且未配置 SPORT_USER / SPORT_PASSWORD。")
@@ -291,4 +297,4 @@ def authenticate(username, password, *, headless=True):
 
 
 def setup_login(output_path, *, browser_channel=None):
-    return asyncio.run(authenticate_async("", "", headless=False, interactive=True, timeout_seconds=600, save_state_path=output_path, browser_channel=browser_channel))
+    return asyncio.run(authenticate_async("", "", headless=False, interactive=True, timeout_seconds=1800, save_state_path=output_path, browser_channel=browser_channel))

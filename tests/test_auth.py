@@ -50,6 +50,23 @@ class ObserverTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(observer.error)
         self.assertFalse(observer.finished.is_set())
 
+    async def test_redirects_wait_for_the_final_auth_response(self):
+        observer = AuthObserver()
+        redirect = response('https://ipahw.xjtu.edu.cn/szjy-boot/sso/codeLogin', {}, status=302)
+        redirect.json.side_effect = ValueError('Example HTML redirect')
+        await observer.response(redirect)
+        self.assertIsNone(observer.error)
+        self.assertFalse(observer.finished.is_set())
+        redirect.json.assert_not_called()
+
+    async def test_interactive_non_json_keeps_the_login_window_open(self):
+        observer = AuthObserver(interactive=True)
+        item = response('https://login.xjtu.edu.cn/cas/mfa/detect', {}, status=200)
+        item.json.side_effect = ValueError('Example private response')
+        await observer.response(item)
+        self.assertIsNone(observer.error)
+        self.assertFalse(observer.finished.is_set())
+
 
 class StateTests(unittest.TestCase):
     def test_export_is_scoped_and_omits_saved_passwords(self):

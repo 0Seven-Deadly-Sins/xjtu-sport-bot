@@ -39,10 +39,10 @@ jobs:
           SPORT_TOKEN: ${{ secrets.SPORT_TOKEN }}
           SPORT_BROWSER_STATE: ${{ secrets.SPORT_BROWSER_STATE }}
         run: |
+          ready=false
           if [ "$EVENT_NAME" = "workflow_dispatch" ] || [ -n "$SPORT_BROWSER_STATE" ] || [ -n "$SPORT_TOKEN" ]; then
-            echo "ready=true" >> "$GITHUB_OUTPUT"
+            ready=true
           else
-            echo "ready=false" >> "$GITHUB_OUTPUT"
             echo "Browser session is not configured. Unit tests passed; live login was skipped." >> "$GITHUB_STEP_SUMMARY"
           fi
           status=0
@@ -53,9 +53,14 @@ jobs:
             echo "browser=false" >> "$GITHUB_OUTPUT"
           elif [ "$status" = "3" ] || [ -z "$SPORT_TOKEN" ]; then
             echo "browser=true" >> "$GITHUB_OUTPUT"
+            if [ "$EVENT_NAME" = "push" ] && [ -z "$SPORT_BROWSER_STATE" ]; then
+              ready=false
+              echo "Unit tests passed. The saved token needs renewal, but the initial trusted session is not configured; live login was skipped. Complete first-time authentication and run this workflow manually." >> "$GITHUB_STEP_SUMMARY"
+            fi
           else
             exit "$status"
           fi
+          echo "ready=$ready" >> "$GITHUB_OUTPUT"
       - name: Identify encrypted session cache
         id: cache
         if: steps.session.outputs.ready == 'true' && steps.session.outputs.browser == 'true'
