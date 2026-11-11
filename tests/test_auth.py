@@ -148,11 +148,13 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(sport_bot.run(auth_only=True), 0)
         operation.assert_not_called()
 
+    @patch('sport_bot.report_interaction_required')
     @patch('sport_bot.sign_operation')
     @patch('sport_bot.authenticate', side_effect=InteractionRequired('Example verification required'))
-    def test_challenge_has_distinct_exit_status(self, auth, operation):
+    def test_challenge_has_distinct_exit_status(self, auth, operation, report):
         self.assertEqual(sport_bot.run(auth_only=True), 2)
         operation.assert_not_called()
+        report.assert_called_once_with()
 
     @patch('sport_bot.time.sleep')
     @patch('sport_bot.sign_operation', return_value=False)

@@ -121,6 +121,25 @@ def obtain_token(*, headed=False):
     return token
 
 
+def report_interaction_required():
+    """Explain a server-required human check without exposing auth responses."""
+    notice = "学校要求本人重新完成安全验证（MFA/验证码）。完成官方网页登录后更新 SPORT_BROWSER_STATE，再运行 verify-login 验证续登。"
+    if os.getenv("GITHUB_ACTIONS") == "true":
+        print("::error title=学校需要本人重新认证::" + notice, flush=True)
+    summary_path = os.getenv("GITHUB_STEP_SUMMARY")
+    if summary_path:
+        try:
+            with open(summary_path, "a", encoding="utf-8") as summary:
+                summary.write(
+                    "\n## 学校需要本人重新认证\n\n"
+                    "本次在认证阶段停止，尚未提交签到或签退请求。\n\n"
+                    + notice + "\n\n"
+                    "已保存的会话和 token 都不能代替学校新要求的本人验证；重复重跑任务不能完成这一步。\n"
+                )
+        except OSError:
+            logging.warning("无法写入 Actions 任务摘要，请按认证日志完成本人验证。")
+
+
 def run(*, auth_only=False, headed=False):
     if not Config.TOKEN and not Config.BROWSER_STATE and (not Config.USER or not Config.PASSWORD):
         logging.error("请配置 SPORT_TOKEN，或 SPORT_BROWSER_STATE / SPORT_USER / SPORT_PASSWORD 登录方案。")
@@ -136,6 +155,7 @@ def run(*, auth_only=False, headed=False):
         token = obtain_token(headed=headed)
     except InteractionRequired as error:
         logging.error("%s", error)
+        report_interaction_required()
         return 2
     except AuthenticationError as error:
         logging.error("%s", error)
